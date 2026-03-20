@@ -1,122 +1,50 @@
-import streamlit as st
-import google.generativeai as genai
-import requests # Понадобится вам для реальных API-запросов
+import requests # Не забудьте убедиться, что requests есть в requirements.txt
 
-# Настройка страницы
-st.set_page_config(page_title="Ассистент Директора", page_icon="🏫")
-
-# --- 1. ФУНКЦИИ ДЛЯ СБОРА ДАННЫХ (ЗАГЛУШКИ) ---
-# Замените логику в этих функциях на реальные запросы к API согласно документации сервисов.
-
-def get_alpha_crm_data():
-    # Пример реального запроса:
-    # response = requests.post("https://your-school.s20.online/v2api/auth/login", ...)
-    # data = requests.get("https://your-school.s20.online/v2api/customer/index", headers=...)
-    return """
-    - Должники: Иванов И. (5000 руб), Петров А. (3200 руб). Общая сумма долга: 8200 руб.
-    - Начисления тьюторов (к выплате): Смирнова Е. (15000 руб), Волков Д. (12500 руб). Общая сумма выплат: 27500 руб.
-    """
-
-def get_tochka_bank_data():
-    # Пример реального запроса:
-    # response = requests.get("https://enter.tochka.com/uapi/open-banking/v1.0/accounts/...", headers=...)
-    return """
-    - Текущий остаток на счете: 345 000 руб.
-    - Последние приходы за 3 дня: 45 000 руб (Оплата обучения), 12 000 руб (Эквайринг).
-    """
-
-def get_elba_data():
-    # Пример реального запроса:
-    # response = requests.get("https://openapi.elba.kontur.ru/v1/taxes/...", headers=...)
-    return """
-    - Ближайшие налоги: УСН за 1 квартал (до 25 апреля) - 42 000 руб, Страховые взносы - 11 500 руб.
-    """
-
-def build_business_context():
-    """Объединяет все данные в единый слепок бизнеса."""
-    alpha_data = get_alpha_crm_data()
-    tochka_data = get_tochka_bank_data()
-    elba_data = get_elba_data()
-
-    context = f"""
-    СЛЕПОК БИЗНЕСА НА ТЕКУЩИЙ МОМЕНТ:
-
-    1. Данные CRM (Alpha CRM):
-    {alpha_data}
-
-    2. Финансы (Точка Банк):
-    {tochka_data}
-
-    3. Налоги и бухгалтерия (Контур.Эльба):
-    {elba_data}
-    """
-    return context
-
-# --- 2. НАСТРОЙКА GEMINI API ---
-# Безопасное получение ключа из секретов Streamlit
-api_key = st.secrets.get("GEMINI_API_KEY")
-if not api_key:
-    st.warning("⚠️ Пожалуйста, добавьте GEMINI_API_KEY в файл .streamlit/secrets.toml")
-    st.stop()
-
-genai.configure(api_key=api_key)
-# Используем модель Gemini 1.5 Flash (быстрая и отлично подходит для текстовых задач)
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-# --- 3. ИНТЕРФЕЙС STREAMLIT ---
-st.title("🏫 ИИ-Ассистент владельца школы")
-st.markdown("Задайте вопрос на основе текущих финансовых показателей и данных CRM.")
-
-# Получаем свежий слепок бизнеса
-business_context = build_business_context()
-
-# Показываем слепок в боковой панели (удобно для контроля)
-with st.sidebar:
-    st.header("📊 Текущий слепок бизнеса")
-    st.info(business_context)
-    st.caption("Эти данные автоматически добавляются к вашему запросу как контекст.")
-
-# Инициализация истории чата в сессии Streamlit
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Отображение истории чата
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Обработка нового ввода от пользователя
-if prompt := st.chat_input("Например: Хватит ли мне сейчас денег на выплату тьюторам и налоги?"):
+def collect_crm_data():
+    # 1. Достаем ключи из вашего цифрового сейфа
+    hostname = st.secrets["ALFACRM_HOSTNAME"]
+    email = st.secrets["ALFACRM_EMAIL"]
+    api_key = st.secrets["ALFACRM_API_KEY"]
     
-    # Сохраняем и отображаем вопрос пользователя
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Системный промпт: Инструктируем модель использовать контекст
-    full_prompt = f"""
-    Ты бизнес-ассистент владельца образовательной школы.
-    Опирайся СТРОГО на следующие данные о бизнесе при ответе на вопрос:
+    base_url = f"https://{hostname}.alfacrm.pro/v2-api"
     
-    {business_context}
-
-    Вопрос владельца: {prompt}
+    # 2. Стучимся в CRM и получаем временный пропуск (токен)
+    auth_payload = {"email": email, "api_key": api_key}
+    try:
+        auth_res = requests.post(f"{base_url}/auth/login", json=auth_payload).json()
+        token = auth_res.get("token")
+        if not token:
+            return "❌ Ошибка авторизации в Alpha CRM. Проверьте логин и API-ключ в Secrets."
+    except Exception as e:
+        return f"❌ Ошибка связи с сервером Alpha CRM: {e}"
+        
+    headers = {"X-ALFACRM-TOKEN": token}
     
-    Отвечай четко, по делу, при необходимости делай математические расчеты.
-    """
-
-    # Отправляем запрос в Gemini и выводим ответ
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        try:
-            with st.spinner('Анализирую данные...'):
-                response = model.generate_content(full_prompt)
-            
-            full_response = response.text
-            message_placeholder.markdown(full_response)
-            
-            # Сохраняем ответ ИИ в историю
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
-            
-        except Exception as e:
-            st.error(f"Произошла ошибка при обращении к API Gemini: {e}")
+    # 3. Запрашиваем активных учеников с отрицательным балансом (должников)
+    try:
+        # is_study: 1 означает, что ученик активен. balance_to: -1 означает баланс меньше нуля.
+        payload_debtors = {"is_study": 1, "balance_to": -1} 
+        customers_res = requests.post(f"{base_url}/customer/index", headers=headers, json=payload_debtors).json()
+        
+        items = customers_res.get("items", [])
+        total_debtors = len(items)
+        
+        # Считаем общую сумму долга
+        total_debt_amount = sum(abs(item.get("balance", 0)) for item in items)
+        
+        # Собираем имена для нейросети (чтобы она знала, о ком речь)
+        debtors_list = ", ".join([f"{c.get('name')} ({c.get('balance')} ₽)" for c in items])
+        if not debtors_list:
+            debtors_list = "Должников нет! Все молодцы."
+        
+        now = datetime.datetime.now()
+        crm_snapshot = f"""
+        --- 🏫 ALPHA CRM СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
+        Активных должников в базе: {total_debtors}.
+        Общая сумма долга: -{total_debt_amount} ₽.
+        Детализация по ученикам: {debtors_list}.
+        """
+        return crm_snapshot
+        
+    except Exception as e:
+        return f"❌ Ошибка при выгрузке списка учеников: {e}"
