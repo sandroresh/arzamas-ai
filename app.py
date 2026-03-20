@@ -1,5 +1,3 @@
-import requests # Не забудьте убедиться, что requests есть в requirements.txt
-
 def collect_crm_data():
     # 1. Достаем ключи из вашего цифрового сейфа
     hostname = st.secrets["ALFACRM_HOSTNAME"]
