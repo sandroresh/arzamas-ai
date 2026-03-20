@@ -1,4 +1,3 @@
-GEMINI_API_KEY = "AIzaSyAy-_4zj8MRHBrsMmyfbtBAxH1MfIcgKg8"
 streamlit
 google-generativeai
 requests
