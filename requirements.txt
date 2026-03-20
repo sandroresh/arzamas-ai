@@ -1,1 +1,4 @@
-GEMINI_API_KEY = "ваш_ключ_от_google_ai_studio"
+GEMINI_API_KEY = "AIzaSyAy-_4zj8MRHBrsMmyfbtBAxH1MfIcgKg8"
+streamlit
+google-generativeai
+requests
