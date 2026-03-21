@@ -13,7 +13,7 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    model = genai.GenerativeModel('gemini-1.5-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
@@ -37,7 +37,6 @@ async def fetch_page(session, url, token, payload, semaphore):
 async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters):
     url = f"{base_url}/{branch_id}/{entity}/index"
     all_items = []
-    
     semaphore = asyncio.Semaphore(3) 
     
     async with aiohttp.ClientSession() as session:
@@ -159,7 +158,6 @@ def process_data_for_ai(raw_data, user_prompt):
 
     # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН И ГРУПП
     prompt_lower = user_prompt.lower()
-    # ДОБАВИЛИ СЛОВА: 'групп', 'какие', 'сколько' (чтобы ИИ охотнее открывал списки)
     trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели', 'резиденты', 'групп', 'какие', 'сколько']
     
     if any(word in prompt_lower for word in trigger_words):
@@ -167,12 +165,23 @@ def process_data_for_ai(raw_data, user_prompt):
         teacher_names = ", ".join([t.get("name") for t in teachers])
         new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых"
         
-        # --- НОВОЕ: Считаем учеников в каждой группе ---
+        # --- ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ ПОДСЧЕТ УЧЕНИКОВ В ГРУППАХ ---
+        # 1. Создаем словарь {id_группы: 0}
+        group_counts = {g.get("id"): 0 for g in groups if g.get("id")}
+        
+        # 2. Пробегаемся по всем ученикам и считаем, где они состоят
+        for c in customers:
+            c_groups = c.get("group_ids") or []
+            if isinstance(c_groups, list):
+                for gid in c_groups:
+                    if gid in group_counts:
+                        group_counts[gid] += 1
+                        
+        # 3. Формируем красивый список
         group_details_list = []
         for g in groups:
             g_name = g.get("name", "Без названия")
-            # Безопасно вытаскиваем массив ID учеников и считаем его длину
-            students_count = len(g.get("customer_ids") or [])
+            students_count = group_counts.get(g.get("id"), 0)
             group_details_list.append(f"{g_name} (учеников: {students_count})")
             
         groups_formatted = ", ".join(group_details_list) if group_details_list else "Групп не найдено"
