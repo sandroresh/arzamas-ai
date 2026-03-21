@@ -258,6 +258,12 @@ if prompt := st.chat_input("Спросите о бизнесе..."):
         system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко, профессионально и только на основе предоставленных данных."
         combined_prompt = f"{system_instruction}\n\n### ДАННЫЕ ###\n{business_snapshot}\n\nВОПРОС:\n{prompt}"
         
+        # --- НОВОЕ: ВЗВЕШИВАЕМ ЗАПРОС ПЕРЕД ОТПРАВКОЙ ---
+        token_count = model.count_tokens(combined_prompt).total_tokens
+        # Выводим маленькую серую надпись в интерфейс
+        st.caption(f"📏 Объем отправленных данных: **{token_count} токенов**")
+        # ------------------------------------------------
+        
         chat_session = model.start_chat(history=[])
         response = chat_session.send_message(combined_prompt)
         
