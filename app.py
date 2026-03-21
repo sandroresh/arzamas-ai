@@ -19,42 +19,36 @@ except Exception as e:
 
 # --- УНИВЕРСАЛЬНЫЙ ПЫЛЕСОС ALPHA CRM ---
 def fetch_all_pages(base_url, token, entity, branch_id=1, **filters):
-    """Умная функция, которая листает страницы и выкачивает сущность целиком"""
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "X-ALFACRM-TOKEN": token
     }
-    
     all_items = []
     page = 0
     page_size = 100
     
     while True:
         payload = {"page": page, "pageSize": page_size}
-        payload.update(filters) # Добавляем любые фильтры (например, дату)
+        payload.update(filters)
         
         url = f"{base_url}/{branch_id}/{entity}/index"
         response = requests.post(url, headers=headers, json=payload)
         
-        # Защита от блокировки (если слишком часто спрашиваем)
         if response.status_code == 429:
             time.sleep(2)
             continue
-            
         if response.status_code != 200:
             break
             
         data = response.json()
         items = data.get("items", [])
         
-        if not items: # Если пришел пустой список — значит дошли до конца
+        if not items:
             break
             
         all_items.extend(items)
         page += 1
-        
-        # Небольшая пауза, чтобы не злить сервер Alpha CRM
         time.sleep(0.2) 
         
     return all_items
@@ -66,7 +60,7 @@ def collect_crm_data():
         api_key_crm = st.secrets["ALFACRM_API_KEY"]
         base_url = f"https://{hostname}.s20.online/v2api"
         
-        # 1. Авторизация
+        # Авторизация
         auth_payload = {"email": email, "api_key": api_key_crm}
         auth_req = requests.post(f"{base_url}/auth/login", json=auth_payload)
         token = auth_req.json().get("token")
@@ -88,10 +82,9 @@ def collect_crm_data():
         current_month = now.strftime("%m")
         current_year = now.strftime("%Y")
 
-        # --- ИСПРАВЛЕНИЕ: Железобетонный фильтр новеньких через Python ---
+        # Железобетонный фильтр новеньких
         new_customers = []
         for c in customers:
-            # CRM отдает дату добавления в формате 'YYYY-MM-DD' или 'DD.MM.YYYY'
             date_add = str(c.get("date_add", "")) 
             if f"{current_year}-{current_month}" in date_add or f".{current_month}.{current_year}" in date_add:
                 new_customers.append(c)
@@ -99,18 +92,15 @@ def collect_crm_data():
         st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
         payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
 
-        # 2. Обработка данных для ИИ
+        # Обработка данных
         total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
         debtors_count = sum(1 for c in customers if float(c.get("balance") or 0) < 0)
         total_income = sum(float(p.get("income") or 0) for p in payments)
         
         lead_names = ", ".join([l.get("name") for l in leads[-20:]])
         teacher_names = ", ".join([t.get("name") for t in teachers])
-        
-        # Формируем список только мартовских новеньких
         new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "В этом месяце новых договоров пока нет."
 
-        # 3. Собираем Мега-Слепок
         return f"""
         --- 🏫 ALPHA CRM ПОЛНЫЙ СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
         
@@ -131,60 +121,47 @@ def collect_crm_data():
         """
     except Exception as e:
         return f"❌ Системная ошибка: {e}"
-        
-def generate_rich_context():
-    # --- ИНТЕРФЕЙС И УМНАЯ ПАМЯТЬ ---
 
-# 1. Создаем хранилища в памяти сессии
+# --- ИНТЕРФЕЙС И УМНАЯ ПАМЯТЬ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
     
 if "business_snapshot" not in st.session_state:
-    st.session_state.business_snapshot = None # Здесь будем хранить слепок
+    st.session_state.business_snapshot = None 
 
-# 2. Боковая панель с кнопками управления
 with st.sidebar:
     st.markdown("### Управление")
-    
-    # Кнопка принудительного обновления данных
     if st.button("🔄 Обновить данные бизнеса", use_container_width=True):
         with st.spinner("Собираю свежие данные (CRM, Банк, Налоги)..."):
-            # В будущем сюда добавим collect_bank_data() и collect_elba_data()
             st.session_state.business_snapshot = collect_crm_data()
         st.success(f"Данные обновлены: {datetime.datetime.now().strftime('%H:%M')}")
         
     st.markdown("---")
-    
-    # Кнопка очистки чата
     if st.button("Новый чат ➕", use_container_width=True):
         st.session_state.messages = []
         st.success("История диалога очищена.")
 
-# 3. Первичная фоновая загрузка (если данных еще нет)
+# Первичная фоновая загрузка
 if st.session_state.business_snapshot is None:
     with st.spinner("Первичная загрузка данных бизнеса..."):
         st.session_state.business_snapshot = collect_crm_data()
 
-# 4. Отрисовка истории сообщений
+# Отрисовка чата
 for message in st.session_state.messages:
     if message.get("role") != "system_context":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-# 5. Обработка вопроса пользователя
+# Обработка вопроса
 if prompt := st.chat_input("Спросите о бизнесе (например: кто пришел в этом месяце?)..."):
-    # Показываем вопрос
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Формируем контекст ИЗ ПАМЯТИ (мгновенно!), а не из интернета
     system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко и по делу на основе предоставленных данных."
     rich_context = f"{system_instruction}\n\n### АКТУАЛЬНЫЕ ДАННЫЕ БИЗНЕСА ###\n{st.session_state.business_snapshot}"
-    
     combined_prompt = f"{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
     
-    # Отправляем в ИИ
     try:
         chat_session = model.start_chat(history=[])
         response = chat_session.send_message(combined_prompt)
