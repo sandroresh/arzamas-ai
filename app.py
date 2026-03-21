@@ -13,8 +13,8 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    # Используем стабильную версию с большим бесплатным лимитом
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    # Используем самую стабильную, быструю и бесплатную модель
+    model = genai.GenerativeModel('gemini-1.5-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
@@ -83,16 +83,17 @@ def get_cached_crm_data(hostname, email, api_key_crm):
         raise Exception("Ошибка авторизации в CRM")
 
     async def run_sync():
-        # КАЧАЕМ ВСЮ ИСТОРИЮ (без фильтров по дате)
+        # КАЧАЕМ ВСЮ ИСТОРИЮ (включая группы)
         task_leads = fetch_all_pages_async(base_url, token, "lead", is_study=0)
         task_customers = fetch_all_pages_async(base_url, token, "customer", is_study=1)
         task_teachers = fetch_all_pages_async(base_url, token, "teacher")
         task_lessons = fetch_all_pages_async(base_url, token, "lesson")
         task_pays = fetch_all_pages_async(base_url, token, "pay")
+        task_groups = fetch_all_pages_async(base_url, token, "group") 
         
-        return await asyncio.gather(task_leads, task_customers, task_teachers, task_lessons, task_pays)
+        return await asyncio.gather(task_leads, task_customers, task_teachers, task_lessons, task_pays, task_groups)
 
-    leads, customers, teachers, lessons, pays = asyncio.run(run_sync())
+    leads, customers, teachers, lessons, pays, groups = asyncio.run(run_sync())
     
     return {
         "leads": leads,
@@ -100,6 +101,7 @@ def get_cached_crm_data(hostname, email, api_key_crm):
         "teachers": teachers,
         "lessons": lessons,
         "pays": pays,
+        "groups": groups,
         "timestamp": datetime.datetime.now()
     }
 
@@ -110,12 +112,18 @@ def process_data_for_ai(raw_data, user_prompt):
     teachers = raw_data["teachers"]
     all_lessons = raw_data["lessons"] 
     all_pays = raw_data["pays"]       
+    groups = raw_data["groups"]
     
     now = raw_data["timestamp"]
     current_month = now.strftime("%m")
     current_year = now.strftime("%Y")
 
-    # 1. ФИЛЬТРУЕМ ИСТОРИЮ (Оставляем только текущий месяц для базовой сводки)
+    # ВЫЧИСЛЯЕМ ГРАНИЦЫ ТЕКУЩЕЙ НЕДЕЛИ (Пн - Вс)
+    # now.weekday() выдает 0 для понедельника и 6 для воскресенья
+    start_of_week = (now - datetime.timedelta(days=now.weekday())).date()
+    end_of_week = start_of_week + datetime.timedelta(days=6)
+
+    # 1. ФИЛЬТРУЕМ ИСТОРИЮ 
     new_customers = [c for c in customers if f"{current_year}-{current_month}" in str(c.get("date_add", "")) or f".{current_month}.{current_year}" in str(c.get("date_add", ""))]
     current_month_pays = [p for p in all_pays if f"{current_year}-{current_month}" in str(p.get("document_date", "")) or f".{current_month}.{current_year}" in str(p.get("document_date", ""))]
     current_month_lessons = [l for l in all_lessons if f"{current_year}-{current_month}" in str(l.get("date", ""))]
@@ -124,6 +132,7 @@ def process_data_for_ai(raw_data, user_prompt):
     total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
     total_income = sum(float(p.get("income") or 0) for p in current_month_pays) 
     
+    # Считаем посещаемость (за месяц)
     attendances, absences = 0, 0
     for lesson in current_month_lessons: 
         if isinstance(lesson.get("details"), list):
@@ -132,16 +141,30 @@ def process_data_for_ai(raw_data, user_prompt):
                 if status == 1: attendances += 1
                 elif status in (0, 2): absences += 1
 
+    # Считаем количество уроков ИМЕННО ЗА ЭТУ НЕДЕЛЮ
+    current_week_lessons_count = 0
+    for l in all_lessons:
+        lesson_date_str = str(l.get("date", ""))[:10] # Формат YYYY-MM-DD
+        try:
+            l_date = datetime.datetime.strptime(lesson_date_str, "%Y-%m-%d").date()
+            if start_of_week <= l_date <= end_of_week:
+                current_week_lessons_count += 1
+        except Exception:
+            pass
+
     # 3. ФОРМИРУЕМ ЛЕГКИЙ ОТЧЕТ ДЛЯ ИИ
     report = f"""
     --- 🏫 ALPHA CRM СВОДКА ({now.strftime("%d.%m.%Y %H:%M")}) ---
     📊 КЛИЕНТЫ: Активных: {len(customers)}. Должников: {sum(1 for c in customers if float(c.get("balance") or 0) < 0)} (Сумма: -{total_debt} ₽). Лидов в базе: {len(leads)}.
     📈 НОВЫЕ ДОГОВОРА (текущий месяц): Пришло {len(new_customers)} чел.
-    📚 АКАДЕМИЧЕСКАЯ СВОДКА (месяц): Занятий: {len(current_month_lessons)}. Посещений: {attendances}. Пропусков: {absences}.
+    📚 АКАДЕМИЧЕСКАЯ СВОДКА: 
+       - Учебных групп всего: {len(groups)}. 
+       - Занятий за месяц: {len(current_month_lessons)} (Из них на этой неделе: {current_week_lessons_count}).
+       - Посещений за месяц: {attendances}. Пропусков: {absences}.
     💰 ФИНАНСЫ (месяц): Зафиксировано платежей на сумму: {total_income} ₽.
     """
 
-    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН (Отправляем только по запросу)
+    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН
     prompt_lower = user_prompt.lower()
     trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели', 'резиденты']
     
@@ -166,21 +189,19 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.markdown("### Управление")
     if st.button("🔄 Скачать всю историю (Сброс кэша)", use_container_width=True):
-        get_cached_crm_data.clear()
+        get_cached_crm_data.clear() 
         st.success("Кэш очищен. Данные будут скачаны заново при следующем вопросе.")
     st.markdown("---")
     if st.button("Новый чат ➕", use_container_width=True):
         st.session_state.messages = []
         
-    # --- ДОБАВЛЯЕМ КНОПКУ РАЗРАБОТЧИКА СЮДА ---
     st.markdown("---")
     if st.button("🛠 Узнать доступные модели", use_container_width=True):
         with st.spinner("Спрашиваю Google..."):
             st.write("✅ **Вам доступны следующие модели:**")
             for m in genai.list_models():
-                # Нам нужны только те модели, которые умеют генерировать текст
                 if 'generateContent' in m.supported_generation_methods:
-                    st.code(m.name.replace("models/", "")) # Убираем лишнюю приписку models/
+                    st.code(m.name.replace("models/", "")) 
 
 for message in st.session_state.messages:
     if message.get("role") != "system_context":
@@ -193,7 +214,6 @@ if prompt := st.chat_input("Спросите о бизнесе..."):
         st.markdown(prompt)
 
     try:
-        # 1. Берем данные из кэша (или скачиваем историю, если кэш пуст)
         with st.spinner("Работаю с базой данных (скачиваю историю при необходимости)..."):
             raw_data = get_cached_crm_data(
                 st.secrets["ALFACRM_HOSTNAME"], 
@@ -201,10 +221,8 @@ if prompt := st.chat_input("Спросите о бизнесе..."):
                 st.secrets["ALFACRM_API_KEY"]
             )
         
-        # 2. Процессор собирает умный текст для ИИ
         business_snapshot = process_data_for_ai(raw_data, prompt)
         
-        # 3. Отправляем в нейросеть
         system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко на основе данных."
         combined_prompt = f"{system_instruction}\n\n### ДАННЫЕ ###\n{business_snapshot}\n\nВОПРОС:\n{prompt}"
         
