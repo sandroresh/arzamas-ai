@@ -225,6 +225,15 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Новый чат ➕", use_container_width=True):
         st.session_state.messages = []
+        
+    # --- ВОТ НАША КНОПКА ВЕРНУЛАСЬ ---
+    st.markdown("---")
+    if st.button("🛠 Узнать доступные модели", use_container_width=True):
+        with st.spinner("Спрашиваю Google..."):
+            st.write("✅ **Вам доступны следующие модели:**")
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    st.code(m.name.replace("models/", ""))
 
 for message in st.session_state.messages:
     if message.get("role") != "system_context":
