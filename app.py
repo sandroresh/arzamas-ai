@@ -2,8 +2,9 @@ import streamlit as st
 import google.generativeai as genai
 import datetime
 import requests
+import time
 
-# --- НАСТРОЙКА СТРАНИЦЫ И ИНТЕРФЕЙСА ---
+# --- НАСТРОЙКА СТРАНИЦЫ ---
 st.set_page_config(page_title="Alpha Fem Panel", page_icon="👩‍💼")
 st.title("Управление школой 'Arzamas'")
 
@@ -16,7 +17,48 @@ except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
 
-# --- ФУНКЦИИ СБОРА ДАННЫХ ---
+# --- УНИВЕРСАЛЬНЫЙ ПЫЛЕСОС ALPHA CRM ---
+def fetch_all_pages(base_url, token, entity, branch_id=1, **filters):
+    """Умная функция, которая листает страницы и выкачивает сущность целиком"""
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-ALFACRM-TOKEN": token
+    }
+    
+    all_items = []
+    page = 0
+    page_size = 100
+    
+    while True:
+        payload = {"page": page, "pageSize": page_size}
+        payload.update(filters) # Добавляем любые фильтры (например, дату)
+        
+        url = f"{base_url}/{branch_id}/{entity}/index"
+        response = requests.post(url, headers=headers, json=payload)
+        
+        # Защита от блокировки (если слишком часто спрашиваем)
+        if response.status_code == 429:
+            time.sleep(2)
+            continue
+            
+        if response.status_code != 200:
+            break
+            
+        data = response.json()
+        items = data.get("items", [])
+        
+        if not items: # Если пришел пустой список — значит дошли до конца
+            break
+            
+        all_items.extend(items)
+        page += 1
+        
+        # Небольшая пауза, чтобы не злить сервер Alpha CRM
+        time.sleep(0.2) 
+        
+    return all_items
+
 def collect_crm_data():
     try:
         hostname = st.secrets["ALFACRM_HOSTNAME"]
@@ -24,73 +66,65 @@ def collect_crm_data():
         api_key_crm = st.secrets["ALFACRM_API_KEY"]
         base_url = f"https://{hostname}.s20.online/v2api"
         
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        
-        # Шаг 1: Авторизация
+        # 1. Авторизация
         auth_payload = {"email": email, "api_key": api_key_crm}
-        auth_req = requests.post(f"{base_url}/auth/login", json=auth_payload, headers=headers)
-        
-        if auth_req.status_code != 200:
-            return f"❌ Ошибка входа (Код {auth_req.status_code}). Ответ сервера: {auth_req.text[:200]}"
-            
-        auth_res = auth_req.json()
-        token = auth_res.get("token")
+        auth_req = requests.post(f"{base_url}/auth/login", json=auth_payload)
+        token = auth_req.json().get("token")
         
         if not token:
-            return f"❌ Авторизация не удалась. CRM ответила: {auth_res}"
-            
-        # Шаг 2: Запрос данных
-        headers["X-ALFACRM-TOKEN"] = token
-        payload_debtors = {"is_study": 1, "balance_to": -1} 
+            return "❌ Ошибка авторизации в CRM."
+
+        st.toast("Выкачиваем Лиды...", icon="⏳")
+        leads = fetch_all_pages(base_url, token, "lead", is_study=0)
         
-        customers_req = requests.post(f"{base_url}/1/customer/index", headers=headers, json=payload_debtors)
+        st.toast("Выкачиваем Учеников...", icon="⏳")
+        customers = fetch_all_pages(base_url, token, "customer", is_study=1)
         
-        if customers_req.status_code != 200:
-            return f"❌ Ошибка загрузки базы (Код {customers_req.status_code}). Ответ: {customers_req.text[:200]}"
-            
-        customers_res = customers_req.json()
-        items = customers_res.get("items", [])
+        st.toast("Выкачиваем Преподавателей...", icon="⏳")
+        teachers = fetch_all_pages(base_url, token, "teacher")
         
-        total_debtors = len(items)
+        st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
+        now = datetime.datetime.now()
+        first_day = now.strftime("01.%m.%Y")
+        payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
+
+        # 2. Обработка данных для ИИ
+        # Считаем долги
+        total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
+        debtors_count = sum(1 for c in customers if float(c.get("balance") or 0) < 0)
         
-        # --- ИСПРАВЛЕНИЕ: Безопасный подсчет баланса ---
-        total_debt_amount = 0
-        for item in items:
-            try:
-                # Насильно превращаем текст от CRM в дробное число
-                bal = float(item.get("balance") or 0)
-                total_debt_amount += abs(bal)
-            except (ValueError, TypeError):
-                pass # Если CRM прислала мусор, просто пропускаем
+        # Считаем доходы за месяц
+        total_income = sum(float(p.get("income") or 0) for p in payments)
         
-        debtors_list = ", ".join([f"{c.get('name')} ({c.get('balance')} ₽)" for c in items])
-        if not debtors_list:
-            debtors_list = "Должников нет! Все молодцы."
-            
+        # Формируем списки
+        lead_names = ", ".join([l.get("name") for l in leads[-20:]]) # Берем 20 последних лидов, чтобы не перегружать текст
+        teacher_names = ", ".join([t.get("name") for t in teachers])
+
+        # 3. Собираем Мега-Слепок
         return f"""
-        --- 🏫 ALPHA CRM СЛЕПОК ({datetime.datetime.now().strftime("%d.%m.%Y %H:%M")}) ---
-        Активных должников: {total_debtors}.
-        Общая сумма долга: -{total_debt_amount} ₽.
-        Детализация: {debtors_list}.
+        --- 🏫 ALPHA CRM ПОЛНЫЙ СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
+        
+        📊 ВОРОНКА И КЛИЕНТЫ:
+        - Активных учеников: {len(customers)}
+        - Должников: {debtors_count} (Сумма долга: -{total_debt} ₽)
+        - Потенциальных клиентов (Лидов) в базе: {len(leads)}. Последние: {lead_names}
+        
+        👩‍🏫 КОМАНДА:
+        - Преподаватели ({len(teachers)} чел.): {teacher_names}
+        
+        💰 ФИНАНСЫ (с начала месяца):
+        - Зафиксировано платежей на сумму: {total_income} ₽
         """
     except Exception as e:
         return f"❌ Системная ошибка: {e}"
-        
-def collect_finance_data():
-    # Пока оставляем заглушку для финансов
-    return f"--- 🏦 ФИНАНСЫ ---\nДанные банка пока не подключены."
 
 def generate_rich_context():
     crm = collect_crm_data()
-    fin = collect_finance_data()
     system_instruction = """
     Ты - операционный директор частной школы Arzamas. Отвечай на вопрос пользователя 
-    на основе актуальных данных бизнеса ниже. Будь краток и предлагай решения.
+    на основе актуальных данных бизнеса ниже.
     """
-    return f"{system_instruction}\n\n### ДАННЫЕ БИЗНЕСА ###\n{crm}\n{fin}"
+    return f"{system_instruction}\n\n### ДАННЫЕ БИЗНЕСА ###\n{crm}"
 
 # --- ИНТЕРФЕЙС ЧАТА ---
 if "messages" not in st.session_state:
@@ -106,16 +140,16 @@ for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-if prompt := st.chat_input("Спросите о бизнесе..."):
+if prompt := st.chat_input("Спросите о бизнесе (например: какая выручка за месяц?)..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    with st.spinner("Собираю данные из CRM..."):
+    with st.spinner("Пылесос собирает данные со всех разделов CRM..."):
         rich_context = generate_rich_context()
         st.session_state.messages.append({"role": "system_context", "content": rich_context})
         
-        combined_prompt = f"### АКТУАЛЬНЫЙ КОНТЕКСТ ###\n{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
+        combined_prompt = f"{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
         
         try:
             chat_session = model.start_chat(history=[])
