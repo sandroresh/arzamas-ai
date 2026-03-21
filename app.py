@@ -166,11 +166,21 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.markdown("### Управление")
     if st.button("🔄 Скачать всю историю (Сброс кэша)", use_container_width=True):
-        get_cached_crm_data.clear() # Жестко чистим "базу данных"
+        get_cached_crm_data.clear()
         st.success("Кэш очищен. Данные будут скачаны заново при следующем вопросе.")
     st.markdown("---")
     if st.button("Новый чат ➕", use_container_width=True):
         st.session_state.messages = []
+        
+    # --- ДОБАВЛЯЕМ КНОПКУ РАЗРАБОТЧИКА СЮДА ---
+    st.markdown("---")
+    if st.button("🛠 Узнать доступные модели", use_container_width=True):
+        with st.spinner("Спрашиваю Google..."):
+            st.write("✅ **Вам доступны следующие модели:**")
+            for m in genai.list_models():
+                # Нам нужны только те модели, которые умеют генерировать текст
+                if 'generateContent' in m.supported_generation_methods:
+                    st.code(m.name.replace("models/", "")) # Убираем лишнюю приписку models/
 
 for message in st.session_state.messages:
     if message.get("role") != "system_context":
