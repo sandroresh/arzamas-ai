@@ -13,7 +13,6 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    # Используем самую стабильную, быструю и бесплатную модель
     model = genai.GenerativeModel('gemini-2.5-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
@@ -29,7 +28,7 @@ async def fetch_page(session, url, token, payload, semaphore):
     async with semaphore:
         async with session.post(url, headers=headers, json=payload) as response:
             if response.status == 429:
-                await asyncio.sleep(2) # Защита от спама
+                await asyncio.sleep(2) 
                 return await fetch_page(session, url, token, payload, semaphore)
             if response.status == 200:
                 return await response.json()
@@ -39,7 +38,6 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
     url = f"{base_url}/{branch_id}/{entity}/index"
     all_items = []
     
-    # Ограничиваем до 3 одновременных запросов
     semaphore = asyncio.Semaphore(3) 
     
     async with aiohttp.ClientSession() as session:
@@ -72,7 +70,7 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
     return all_items
 
 # --- КЭШИРОВАНИЕ ДАННЫХ В ПАМЯТИ ---
-@st.cache_data(ttl=3600, show_spinner=False) # Кэш живет 1 час
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_crm_data(hostname, email, api_key_crm):
     base_url = f"https://{hostname}.s20.online/v2api"
     
@@ -83,7 +81,6 @@ def get_cached_crm_data(hostname, email, api_key_crm):
         raise Exception("Ошибка авторизации в CRM")
 
     async def run_sync():
-        # КАЧАЕМ ВСЮ ИСТОРИЮ (включая группы)
         task_leads = fetch_all_pages_async(base_url, token, "lead", is_study=0)
         task_customers = fetch_all_pages_async(base_url, token, "customer", is_study=1)
         task_teachers = fetch_all_pages_async(base_url, token, "teacher")
@@ -118,8 +115,6 @@ def process_data_for_ai(raw_data, user_prompt):
     current_month = now.strftime("%m")
     current_year = now.strftime("%Y")
 
-    # ВЫЧИСЛЯЕМ ГРАНИЦЫ ТЕКУЩЕЙ НЕДЕЛИ (Пн - Вс)
-    # now.weekday() выдает 0 для понедельника и 6 для воскресенья
     start_of_week = (now - datetime.timedelta(days=now.weekday())).date()
     end_of_week = start_of_week + datetime.timedelta(days=6)
 
@@ -132,7 +127,6 @@ def process_data_for_ai(raw_data, user_prompt):
     total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
     total_income = sum(float(p.get("income") or 0) for p in current_month_pays) 
     
-    # Считаем посещаемость (за месяц)
     attendances, absences = 0, 0
     for lesson in current_month_lessons: 
         if isinstance(lesson.get("details"), list):
@@ -141,10 +135,9 @@ def process_data_for_ai(raw_data, user_prompt):
                 if status == 1: attendances += 1
                 elif status in (0, 2): absences += 1
 
-    # Считаем количество уроков ИМЕННО ЗА ЭТУ НЕДЕЛЮ
     current_week_lessons_count = 0
     for l in all_lessons:
-        lesson_date_str = str(l.get("date", ""))[:10] # Формат YYYY-MM-DD
+        lesson_date_str = str(l.get("date", ""))[:10]
         try:
             l_date = datetime.datetime.strptime(lesson_date_str, "%Y-%m-%d").date()
             if start_of_week <= l_date <= end_of_week:
@@ -164,17 +157,29 @@ def process_data_for_ai(raw_data, user_prompt):
     💰 ФИНАНСЫ (месяц): Зафиксировано платежей на сумму: {total_income} ₽.
     """
 
-    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН
+    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН И ГРУПП
     prompt_lower = user_prompt.lower()
-    trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели', 'резиденты']
+    # ДОБАВИЛИ СЛОВА: 'групп', 'какие', 'сколько' (чтобы ИИ охотнее открывал списки)
+    trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели', 'резиденты', 'групп', 'какие', 'сколько']
     
     if any(word in prompt_lower for word in trigger_words):
         lead_names = ", ".join([l.get("name") for l in leads[-15:]])
         teacher_names = ", ".join([t.get("name") for t in teachers])
         new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых"
         
+        # --- НОВОЕ: Считаем учеников в каждой группе ---
+        group_details_list = []
+        for g in groups:
+            g_name = g.get("name", "Без названия")
+            # Безопасно вытаскиваем массив ID учеников и считаем его длину
+            students_count = len(g.get("customer_ids") or [])
+            group_details_list.append(f"{g_name} (учеников: {students_count})")
+            
+        groups_formatted = ", ".join(group_details_list) if group_details_list else "Групп не найдено"
+
         report += f"""
-        \nДЕТАЛИЗАЦИЯ (ИМЕНА):
+        \nДЕТАЛИЗАЦИЯ (ИМЕНА И ГРУППЫ):
+        - Список учебных групп: {groups_formatted}
         - Новенькие в этом месяце: {new_customer_names}
         - Последние 15 лидов: {lead_names}
         - Преподаватели: {teacher_names}
