@@ -82,17 +82,20 @@ def collect_crm_data():
         current_month = now.strftime("%m")
         current_year = now.strftime("%Y")
 
-        # Железобетонный фильтр новеньких
+        # --- НОВОЕ: ВЫКАЧИВАЕМ УРОКИ ---
+        st.toast("Выкачиваем Занятия и Пропуски...", icon="⏳")
+        lessons = fetch_all_pages(base_url, token, "lesson", date_from=first_day)
+
+        st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
+        payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
+
+        # Обработка данных
         new_customers = []
         for c in customers:
             date_add = str(c.get("date_add", "")) 
             if f"{current_year}-{current_month}" in date_add or f".{current_month}.{current_year}" in date_add:
                 new_customers.append(c)
-                
-        st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
-        payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
 
-        # Обработка данных
         total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
         debtors_count = sum(1 for c in customers if float(c.get("balance") or 0) < 0)
         total_income = sum(float(p.get("income") or 0) for p in payments)
@@ -100,6 +103,22 @@ def collect_crm_data():
         lead_names = ", ".join([l.get("name") for l in leads[-20:]])
         teacher_names = ", ".join([t.get("name") for t in teachers])
         new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "В этом месяце новых договоров пока нет."
+
+        # --- НОВОЕ: СЧИТАЕМ ПОСЕЩАЕМОСТЬ ---
+        total_lessons = len(lessons)
+        attendances = 0
+        absences = 0
+        
+        for lesson in lessons:
+            details = lesson.get("details", [])
+            if isinstance(details, list):
+                for student in details:
+                    # 1 = был, 0 = не был, 2 = уважительная причина (стандарты CRM)
+                    status = student.get("is_attend")
+                    if status == 1:
+                        attendances += 1
+                    elif status in (0, 2):
+                        absences += 1
 
         return f"""
         --- 🏫 ALPHA CRM ПОЛНЫЙ СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
@@ -112,6 +131,11 @@ def collect_crm_data():
         📈 НОВЫЕ ДОГОВОРА (за {current_month}.{current_year}):
         - Новых резидентов за месяц: {len(new_customers)}
         - Кто именно пришел: {new_customer_names}
+        
+        📚 АКАДЕМИЧЕСКАЯ СВОДКА (с начала месяца):
+        - Проведено занятий (групп): {total_lessons}
+        - Всего индивидуальных посещений: {attendances}
+        - Всего пропусков: {absences}
         
         👩‍🏫 КОМАНДА:
         - Преподаватели ({len(teachers)} чел.): {teacher_names}
@@ -126,13 +150,15 @@ def collect_crm_data():
 if "messages" not in st.session_state:
     st.session_state.messages = []
     
+# Создаем кэш в памяти браузера
 if "business_snapshot" not in st.session_state:
     st.session_state.business_snapshot = None 
 
 with st.sidebar:
     st.markdown("### Управление")
+    # Кнопка для ручного сброса кэша и выкачивания свежих данных
     if st.button("🔄 Обновить данные бизнеса", use_container_width=True):
-        with st.spinner("Собираю свежие данные (CRM, Банк, Налоги)..."):
+        with st.spinner("Собираю свежие данные со всех баз..."):
             st.session_state.business_snapshot = collect_crm_data()
         st.success(f"Данные обновлены: {datetime.datetime.now().strftime('%H:%M')}")
         
@@ -141,9 +167,9 @@ with st.sidebar:
         st.session_state.messages = []
         st.success("История диалога очищена.")
 
-# Первичная фоновая загрузка
+# Первичная фоновая загрузка в кэш
 if st.session_state.business_snapshot is None:
-    with st.spinner("Первичная загрузка данных бизнеса..."):
+    with st.spinner("Создаю кэш: скачиваю все данные CRM... (займет 10-15 сек)"):
         st.session_state.business_snapshot = collect_crm_data()
 
 # Отрисовка чата
@@ -153,11 +179,12 @@ for message in st.session_state.messages:
             st.markdown(message["content"])
 
 # Обработка вопроса
-if prompt := st.chat_input("Спросите о бизнесе (например: кто пришел в этом месяце?)..."):
+if prompt := st.chat_input("Спросите о бизнесе..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # ИИ берет данные моментально из кэша
     system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко и по делу на основе предоставленных данных."
     rich_context = f"{system_instruction}\n\n### АКТУАЛЬНЫЕ ДАННЫЕ БИЗНЕСА ###\n{st.session_state.business_snapshot}"
     combined_prompt = f"{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
