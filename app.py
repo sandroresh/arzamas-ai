@@ -83,31 +83,39 @@ def collect_crm_data():
         st.toast("Выкачиваем Преподавателей...", icon="⏳")
         teachers = fetch_all_pages(base_url, token, "teacher")
         
-        st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
         now = datetime.datetime.now()
         first_day = now.strftime("01.%m.%Y")
+
+        # --- НОВОЕ: Отдельно забираем мартовские договоры ---
+        st.toast("Ищем новые договоры...", icon="⏳")
+        new_customers = fetch_all_pages(base_url, token, "customer", is_study=1, added_from=first_day)
+        
+        st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
         payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
 
         # 2. Обработка данных для ИИ
-        # Считаем долги
         total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
         debtors_count = sum(1 for c in customers if float(c.get("balance") or 0) < 0)
-        
-        # Считаем доходы за месяц
         total_income = sum(float(p.get("income") or 0) for p in payments)
         
-        # Формируем списки
-        lead_names = ", ".join([l.get("name") for l in leads[-20:]]) # Берем 20 последних лидов, чтобы не перегружать текст
+        lead_names = ", ".join([l.get("name") for l in leads[-20:]])
         teacher_names = ", ".join([t.get("name") for t in teachers])
+        
+        # Формируем список новеньких
+        new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых договоров."
 
         # 3. Собираем Мега-Слепок
         return f"""
         --- 🏫 ALPHA CRM ПОЛНЫЙ СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
         
         📊 ВОРОНКА И КЛИЕНТЫ:
-        - Активных учеников: {len(customers)}
+        - Активных учеников всего: {len(customers)}
         - Должников: {debtors_count} (Сумма долга: -{total_debt} ₽)
-        - Потенциальных клиентов (Лидов) в базе: {len(leads)}. Последние: {lead_names}
+        - Потенциальных клиентов (Лидов): {len(leads)}. Последние: {lead_names}
+        
+        📈 НОВЫЕ ДОГОВОРА (с {first_day}):
+        - Новых резидентов за месяц: {len(new_customers)}
+        - Кто именно пришел: {new_customer_names}
         
         👩‍🏫 КОМАНДА:
         - Преподаватели ({len(teachers)} чел.): {teacher_names}
@@ -117,7 +125,7 @@ def collect_crm_data():
         """
     except Exception as e:
         return f"❌ Системная ошибка: {e}"
-
+        
 def generate_rich_context():
     crm = collect_crm_data()
     system_instruction = """
