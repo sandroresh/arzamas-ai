@@ -133,44 +133,64 @@ def collect_crm_data():
         return f"❌ Системная ошибка: {e}"
         
 def generate_rich_context():
-    crm = collect_crm_data()
-    system_instruction = """
-    Ты - операционный директор частной школы Arzamas. Отвечай на вопрос пользователя 
-    на основе актуальных данных бизнеса ниже.
-    """
-    return f"{system_instruction}\n\n### ДАННЫЕ БИЗНЕСА ###\n{crm}"
+    # --- ИНТЕРФЕЙС И УМНАЯ ПАМЯТЬ ---
 
-# --- ИНТЕРФЕЙС ЧАТА ---
+# 1. Создаем хранилища в памяти сессии
 if "messages" not in st.session_state:
     st.session_state.messages = []
+    
+if "business_snapshot" not in st.session_state:
+    st.session_state.business_snapshot = None # Здесь будем хранить слепок
 
+# 2. Боковая панель с кнопками управления
 with st.sidebar:
-    if st.button("Новый чат ➕"):
+    st.markdown("### Управление")
+    
+    # Кнопка принудительного обновления данных
+    if st.button("🔄 Обновить данные бизнеса", use_container_width=True):
+        with st.spinner("Собираю свежие данные (CRM, Банк, Налоги)..."):
+            # В будущем сюда добавим collect_bank_data() и collect_elba_data()
+            st.session_state.business_snapshot = collect_crm_data()
+        st.success(f"Данные обновлены: {datetime.datetime.now().strftime('%H:%M')}")
+        
+    st.markdown("---")
+    
+    # Кнопка очистки чата
+    if st.button("Новый чат ➕", use_container_width=True):
         st.session_state.messages = []
-        st.success("История очищена.")
+        st.success("История диалога очищена.")
 
+# 3. Первичная фоновая загрузка (если данных еще нет)
+if st.session_state.business_snapshot is None:
+    with st.spinner("Первичная загрузка данных бизнеса..."):
+        st.session_state.business_snapshot = collect_crm_data()
+
+# 4. Отрисовка истории сообщений
 for message in st.session_state.messages:
     if message.get("role") != "system_context":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-if prompt := st.chat_input("Спросите о бизнесе (например: какая выручка за месяц?)..."):
+# 5. Обработка вопроса пользователя
+if prompt := st.chat_input("Спросите о бизнесе (например: кто пришел в этом месяце?)..."):
+    # Показываем вопрос
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    with st.spinner("Пылесос собирает данные со всех разделов CRM..."):
-        rich_context = generate_rich_context()
-        st.session_state.messages.append({"role": "system_context", "content": rich_context})
+    # Формируем контекст ИЗ ПАМЯТИ (мгновенно!), а не из интернета
+    system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко и по делу на основе предоставленных данных."
+    rich_context = f"{system_instruction}\n\n### АКТУАЛЬНЫЕ ДАННЫЕ БИЗНЕСА ###\n{st.session_state.business_snapshot}"
+    
+    combined_prompt = f"{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
+    
+    # Отправляем в ИИ
+    try:
+        chat_session = model.start_chat(history=[])
+        response = chat_session.send_message(combined_prompt)
         
-        combined_prompt = f"{rich_context}\n\nВОПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
-        
-        try:
-            chat_session = model.start_chat(history=[])
-            response = chat_session.send_message(combined_prompt)
-            
-            with st.chat_message("assistant"):
-                st.markdown(response.text)
-            st.session_state.messages.append({"role": "assistant", "content": response.text})
-        except Exception as e:
-            st.error(f"Ошибка ИИ: {e}")
+        with st.chat_message("assistant"):
+            st.markdown(response.text)
+        st.session_state.messages.append({"role": "assistant", "content": response.text})
+    except Exception as e:
+        st.error(f"Ошибка ИИ: {e}")
