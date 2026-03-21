@@ -19,27 +19,44 @@ except Exception as e:
 # --- ФУНКЦИИ СБОРА ДАННЫХ ---
 def collect_crm_data():
     try:
-        # Достаем ключи из сейфа
         hostname = st.secrets["ALFACRM_HOSTNAME"]
         email = st.secrets["ALFACRM_EMAIL"]
         api_key_crm = st.secrets["ALFACRM_API_KEY"]
-        base_url = f"https://{hostname}.s20.online/v2-api"
         
-        # Получаем токен авторизации
+        # ИСПРАВЛЕНИЕ 1: Убрали дефис из v2api
+        base_url = f"https://{hostname}.s20.online/v2api"
+        
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        
+        # Шаг 1: Авторизация
         auth_payload = {"email": email, "api_key": api_key_crm}
-        auth_res = requests.post(f"{base_url}/auth/login", json=auth_payload).json()
+        auth_req = requests.post(f"{base_url}/auth/login", json=auth_payload, headers=headers)
+        
+        if auth_req.status_code != 200:
+            return f"❌ Ошибка входа (Код {auth_req.status_code}). Ответ сервера: {auth_req.text[:200]}"
+            
+        auth_res = auth_req.json()
         token = auth_res.get("token")
         
         if not token:
-            return "❌ Ошибка авторизации в Alpha CRM. Проверьте логин и ключ."
+            return f"❌ Авторизация не удалась. CRM ответила: {auth_res}"
             
-        headers = {"X-ALFACRM-TOKEN": token}
-        
-        # Запрашиваем должников
+        # Шаг 2: Запрос данных
+        headers["X-ALFACRM-TOKEN"] = token
         payload_debtors = {"is_study": 1, "balance_to": -1} 
-        customers_res = requests.post(f"{base_url}/customer/index", headers=headers, json=payload_debtors).json()
         
+        # ИСПРАВЛЕНИЕ 2: Добавили /1/ (ID филиала) перед customer
+        customers_req = requests.post(f"{base_url}/1/customer/index", headers=headers, json=payload_debtors)
+        
+        if customers_req.status_code != 200:
+            return f"❌ Ошибка загрузки базы (Код {customers_req.status_code}). Ответ: {customers_req.text[:200]}"
+            
+        customers_res = customers_req.json()
         items = customers_res.get("items", [])
+        
         total_debtors = len(items)
         total_debt_amount = sum(abs(item.get("balance", 0)) for item in items)
         
@@ -54,8 +71,7 @@ def collect_crm_data():
         Детализация: {debtors_list}.
         """
     except Exception as e:
-        return f"❌ Ошибка выгрузки CRM: {e}"
-
+        return f"❌ Системная ошибка: {e}"
 def collect_finance_data():
     # Пока оставляем заглушку для финансов
     return f"--- 🏦 ФИНАНСЫ ---\nДанные банка пока не подключены."
