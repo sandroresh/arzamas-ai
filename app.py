@@ -22,8 +22,6 @@ def collect_crm_data():
         hostname = st.secrets["ALFACRM_HOSTNAME"]
         email = st.secrets["ALFACRM_EMAIL"]
         api_key_crm = st.secrets["ALFACRM_API_KEY"]
-        
-        # ИСПРАВЛЕНИЕ 1: Убрали дефис из v2api
         base_url = f"https://{hostname}.s20.online/v2api"
         
         headers = {
@@ -48,7 +46,6 @@ def collect_crm_data():
         headers["X-ALFACRM-TOKEN"] = token
         payload_debtors = {"is_study": 1, "balance_to": -1} 
         
-        # ИСПРАВЛЕНИЕ 2: Добавили /1/ (ID филиала) перед customer
         customers_req = requests.post(f"{base_url}/1/customer/index", headers=headers, json=payload_debtors)
         
         if customers_req.status_code != 200:
@@ -58,7 +55,16 @@ def collect_crm_data():
         items = customers_res.get("items", [])
         
         total_debtors = len(items)
-        total_debt_amount = sum(abs(item.get("balance", 0)) for item in items)
+        
+        # --- ИСПРАВЛЕНИЕ: Безопасный подсчет баланса ---
+        total_debt_amount = 0
+        for item in items:
+            try:
+                # Насильно превращаем текст от CRM в дробное число
+                bal = float(item.get("balance") or 0)
+                total_debt_amount += abs(bal)
+            except (ValueError, TypeError):
+                pass # Если CRM прислала мусор, просто пропускаем
         
         debtors_list = ", ".join([f"{c.get('name')} ({c.get('balance')} ₽)" for c in items])
         if not debtors_list:
@@ -72,6 +78,7 @@ def collect_crm_data():
         """
     except Exception as e:
         return f"❌ Системная ошибка: {e}"
+        
 def collect_finance_data():
     # Пока оставляем заглушку для финансов
     return f"--- 🏦 ФИНАНСЫ ---\nДанные банка пока не подключены."
