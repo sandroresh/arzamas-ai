@@ -11,7 +11,7 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-pro') 
+    model = genai.GenerativeModel('gemini-2.5-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
