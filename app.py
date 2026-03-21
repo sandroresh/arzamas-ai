@@ -85,11 +85,17 @@ def collect_crm_data():
         
         now = datetime.datetime.now()
         first_day = now.strftime("01.%m.%Y")
+        current_month = now.strftime("%m")
+        current_year = now.strftime("%Y")
 
-        # --- НОВОЕ: Отдельно забираем мартовские договоры ---
-        st.toast("Ищем новые договоры...", icon="⏳")
-        new_customers = fetch_all_pages(base_url, token, "customer", is_study=1, added_from=first_day)
-        
+        # --- ИСПРАВЛЕНИЕ: Железобетонный фильтр новеньких через Python ---
+        new_customers = []
+        for c in customers:
+            # CRM отдает дату добавления в формате 'YYYY-MM-DD' или 'DD.MM.YYYY'
+            date_add = str(c.get("date_add", "")) 
+            if f"{current_year}-{current_month}" in date_add or f".{current_month}.{current_year}" in date_add:
+                new_customers.append(c)
+                
         st.toast("Выкачиваем Платежи за этот месяц...", icon="⏳")
         payments = fetch_all_pages(base_url, token, "pay", document_date_from=first_day)
 
@@ -101,8 +107,8 @@ def collect_crm_data():
         lead_names = ", ".join([l.get("name") for l in leads[-20:]])
         teacher_names = ", ".join([t.get("name") for t in teachers])
         
-        # Формируем список новеньких
-        new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых договоров."
+        # Формируем список только мартовских новеньких
+        new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "В этом месяце новых договоров пока нет."
 
         # 3. Собираем Мега-Слепок
         return f"""
@@ -113,7 +119,7 @@ def collect_crm_data():
         - Должников: {debtors_count} (Сумма долга: -{total_debt} ₽)
         - Потенциальных клиентов (Лидов): {len(leads)}. Последние: {lead_names}
         
-        📈 НОВЫЕ ДОГОВОРА (с {first_day}):
+        📈 НОВЫЕ ДОГОВОРА (за {current_month}.{current_year}):
         - Новых резидентов за месяц: {len(new_customers)}
         - Кто именно пришел: {new_customer_names}
         
