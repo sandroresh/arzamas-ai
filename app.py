@@ -23,7 +23,7 @@ def collect_crm_data():
         hostname = st.secrets["ALFACRM_HOSTNAME"]
         email = st.secrets["ALFACRM_EMAIL"]
         api_key_crm = st.secrets["ALFACRM_API_KEY"]
-        base_url = f"https://{hostname}.alfacrm.pro/v2-api"
+        base_url = f"https://{hostname}.s20.online/v2-api"
         
         # Получаем токен авторизации
         auth_payload = {"email": email, "api_key": api_key_crm}
