@@ -12,7 +12,7 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash') 
+    model = genai.GenerativeModel('gemini-2.0-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
@@ -91,12 +91,12 @@ def get_cached_crm_data(hostname, email, api_key_crm):
         now = datetime.datetime.now()
         first_day = now.strftime("01.%m.%Y")
         
-        # Запускаем выкачивание ВСЕХ сущностей параллельно (молниеносно)
+        # УБРАЛИ фильтры date_from и document_date_from. Теперь качается ВСЯ ИСТОРИЯ!
         task_leads = fetch_all_pages_async(base_url, token, "lead", is_study=0)
         task_customers = fetch_all_pages_async(base_url, token, "customer", is_study=1)
         task_teachers = fetch_all_pages_async(base_url, token, "teacher")
-        task_lessons = fetch_all_pages_async(base_url, token, "lesson", date_from=first_day)
-        task_pays = fetch_all_pages_async(base_url, token, "pay", document_date_from=first_day)
+        task_lessons = fetch_all_pages_async(base_url, token, "lesson") # Качаем все уроки
+        task_pays = fetch_all_pages_async(base_url, token, "pay")       # Качаем все платежи
         
         return await asyncio.gather(task_leads, task_customers, task_teachers, task_lessons, task_pays)
 
@@ -113,99 +113,61 @@ def get_cached_crm_data(hostname, email, api_key_crm):
     }
 
 # --- ПРОЦЕССОР (Аналог вашего processor.py) ---
-def process_data_for_ai(raw_data):
+def process_data_for_ai(raw_data, user_prompt):
     customers = raw_data["customers"]
     leads = raw_data["leads"]
     teachers = raw_data["teachers"]
-    lessons = raw_data["lessons"]
-    pays = raw_data["pays"]
+    all_lessons = raw_data["lessons"] # Теперь тут вся история
+    all_pays = raw_data["pays"]       # Теперь тут вся история
     
     now = raw_data["timestamp"]
     current_month = now.strftime("%m")
     current_year = now.strftime("%Y")
 
-    # Считаем новеньких
+    # 1. ФИЛЬТРУЕМ ИСТОРИЮ (Оставляем только текущий месяц для базовой сводки)
     new_customers = [c for c in customers if f"{current_year}-{current_month}" in str(c.get("date_add", "")) or f".{current_month}.{current_year}" in str(c.get("date_add", ""))]
     
-    # Финансы
-    total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
-    total_income = sum(float(p.get("income") or 0) for p in pays)
+    current_month_pays = [p for p in all_pays if f"{current_year}-{current_month}" in str(p.get("document_date", "")) or f".{current_month}.{current_year}" in str(p.get("document_date", ""))]
     
-    # Посещаемость
+    current_month_lessons = [l for l in all_lessons if f"{current_year}-{current_month}" in str(l.get("date", ""))]
+
+    # 2. СЧИТАЕМ ЦИФРЫ
+    total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
+    total_income = sum(float(p.get("income") or 0) for p in current_month_pays) # Выручка только за этот месяц
+    
     attendances, absences = 0, 0
-    for lesson in lessons:
+    for lesson in current_month_lessons: # Уроки только за этот месяц
         if isinstance(lesson.get("details"), list):
             for student in lesson["details"]:
                 status = student.get("is_attend")
                 if status == 1: attendances += 1
                 elif status in (0, 2): absences += 1
-                
-    # Формируем отчет
-    lead_names = ", ".join([l.get("name") for l in leads[-10:]])
-    teacher_names = ", ".join([t.get("name") for t in teachers])
-    new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых договоров."
 
-    return f"""
-    --- 🏫 ALPHA CRM СЛЕПОК ({now.strftime("%d.%m.%Y %H:%M")}) ---
-    📊 ВОРОНКА И КЛИЕНТЫ:
-    - Активных учеников: {len(customers)}
-    - Должников: {sum(1 for c in customers if float(c.get("balance") or 0) < 0)} (Долг: -{total_debt} ₽)
-    - Лидов в базе: {len(leads)}. Последние 10: {lead_names}
-    📈 НОВЫЕ ДОГОВОРА (за этот месяц):
-    - Пришло: {len(new_customers)}. Имена: {new_customer_names}
-    📚 АКАДЕМИЧЕСКАЯ СВОДКА (за этот месяц):
-    - Проведено занятий: {len(lessons)}
-    - Посещений: {attendances} | Пропусков: {absences}
-    👩‍🏫 КОМАНДА ({len(teachers)} чел.): {teacher_names}
-    💰 ФИНАНСЫ (с начала месяца):
-    - Зафиксировано платежей на сумму: {total_income} ₽
+    # 3. ФОРМИРУЕМ ЛЕГКИЙ ОТЧЕТ ДЛЯ ИИ
+    report = f"""
+    --- 🏫 ALPHA CRM СВОДКА ({now.strftime("%d.%m.%Y %H:%M")}) ---
+    📊 КЛИЕНТЫ: Активных: {len(customers)}. Должников: {sum(1 for c in customers if float(c.get("balance") or 0) < 0)} (Сумма: -{total_debt} ₽). Лидов в базе: {len(leads)}.
+    📈 НОВЫЕ ДОГОВОРА (текущий месяц): Пришло {len(new_customers)} чел.
+    📚 АКАДЕМИЧЕСКАЯ СВОДКА (месяц): Занятий: {len(current_month_lessons)}. Посещений: {attendances}. Пропусков: {absences}.
+    💰 ФИНАНСЫ (месяц): Зафиксировано платежей на сумму: {total_income} ₽.
     """
 
-# --- ИНТЕРФЕЙС ЧАТА ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-with st.sidebar:
-    st.markdown("### Управление")
-    if st.button("🔄 Скачать свежие данные (Сброс кэша)", use_container_width=True):
-        get_cached_crm_data.clear() # Жестко чистим "базу данных"
-        st.success("Кэш очищен. Данные будут скачаны заново при следующем вопросе.")
-    st.markdown("---")
-    if st.button("Новый чат ➕", use_container_width=True):
-        st.session_state.messages = []
-
-for message in st.session_state.messages:
-    if message.get("role") != "system_context":
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-if prompt := st.chat_input("Спросите о бизнесе..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    try:
-        # 1. Берем данные из кэша (или скачиваем асинхронно, если кэш пуст)
-        with st.spinner("Проверяю базу данных..."):
-            raw_data = get_cached_crm_data(
-                st.secrets["ALFACRM_HOSTNAME"], 
-                st.secrets["ALFACRM_EMAIL"], 
-                st.secrets["ALFACRM_API_KEY"]
-            )
+    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН
+    prompt_lower = user_prompt.lower()
+    trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели']
+    
+    if any(word in prompt_lower for word in trigger_words):
+        lead_names = ", ".join([l.get("name") for l in leads[-15:]])
+        teacher_names = ", ".join([t.get("name") for t in teachers])
+        new_customer_names = ", ".join([c.get("name") for c in new_customers]) if new_customers else "Нет новых"
         
-        # 2. Процессор собирает текст для ИИ
-        business_snapshot = process_data_for_ai(raw_data)
+        report += f"""
+        \nДЕТАЛИЗАЦИЯ (ИМЕНА):
+        - Новенькие в этом месяце: {new_customer_names}
+        - Последние 15 лидов: {lead_names}
+        - Преподаватели: {teacher_names}
+        """
         
-        # 3. Отправляем в нейросеть
-        system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко на основе данных."
-        combined_prompt = f"{system_instruction}\n\n### ДАННЫЕ ###\n{business_snapshot}\n\nВОПРОС:\n{prompt}"
-        
-        chat_session = model.start_chat(history=[])
-        response = chat_session.send_message(combined_prompt)
-        
-        with st.chat_message("assistant"):
-            st.markdown(response.text)
-        st.session_state.messages.append({"role": "assistant", "content": response.text})
-        
+    return report
     except Exception as e:
         st.error(f"Системная ошибка: {e}")
