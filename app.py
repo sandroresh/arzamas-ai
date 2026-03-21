@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import datetime
+import requests
 import aiohttp
 import asyncio
 
@@ -12,12 +13,13 @@ st.title("Управление школой 'Arzamas'")
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
+    # Используем стабильную версию с большим бесплатным лимитом
     model = genai.GenerativeModel('gemini-2.0-flash') 
 except Exception as e:
     st.error("Ошибка API Ключа Google. Проверьте 'Secrets'.")
     st.stop()
 
-# --- АСИНХРОННЫЙ КЛИЕНТ (Аналог вашего async_client_alfacrm.py) ---
+# --- АСИНХРОННЫЙ КЛИЕНТ (Пылесос) ---
 async def fetch_page(session, url, token, payload, semaphore):
     headers = {
         "Accept": "application/json",
@@ -37,11 +39,10 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
     url = f"{base_url}/{branch_id}/{entity}/index"
     all_items = []
     
-    # Ограничиваем до 3 одновременных запросов, как в вашем коде
+    # Ограничиваем до 3 одновременных запросов
     semaphore = asyncio.Semaphore(3) 
     
     async with aiohttp.ClientSession() as session:
-        # 1. Запрашиваем первую страницу, чтобы узнать общее количество (total)
         payload = {"page": 0, "pageSize": 100}
         payload.update(filters)
         first_page = await fetch_page(session, url, token, payload, semaphore)
@@ -55,7 +56,6 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
         if total_count <= 100:
             return all_items
             
-        # 2. Если записей больше 100, генерируем асинхронные задачи для остальных страниц
         total_pages = (total_count + 99) // 100
         tasks = []
         for page in range(1, total_pages):
@@ -63,7 +63,6 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
             page_payload.update(filters)
             tasks.append(fetch_page(session, url, token, page_payload, semaphore))
             
-        # 3. Запускаем все запросы параллельно!
         results = await asyncio.gather(*tasks)
         
         for res in results:
@@ -72,35 +71,27 @@ async def fetch_all_pages_async(base_url, token, entity, branch_id=1, **filters)
                 
     return all_items
 
-# --- КЭШИРОВАНИЕ (Аналог вашего database_manager.py) ---
-# Эта функция скачает данные один раз и "заморозит" их в памяти Streamlit
+# --- КЭШИРОВАНИЕ ДАННЫХ В ПАМЯТИ ---
 @st.cache_data(ttl=3600, show_spinner=False) # Кэш живет 1 час
 def get_cached_crm_data(hostname, email, api_key_crm):
     base_url = f"https://{hostname}.s20.online/v2api"
     
-    # Синхронная авторизация для получения токена
-    import requests
     auth_payload = {"email": email, "api_key": api_key_crm}
     auth_req = requests.post(f"{base_url}/auth/login", json=auth_payload)
     token = auth_req.json().get("token")
     if not token:
         raise Exception("Ошибка авторизации в CRM")
 
-    # Функция-обертка для запуска асинхронного кода
     async def run_sync():
-        now = datetime.datetime.now()
-        first_day = now.strftime("01.%m.%Y")
-        
-        # УБРАЛИ фильтры date_from и document_date_from. Теперь качается ВСЯ ИСТОРИЯ!
+        # КАЧАЕМ ВСЮ ИСТОРИЮ (без фильтров по дате)
         task_leads = fetch_all_pages_async(base_url, token, "lead", is_study=0)
         task_customers = fetch_all_pages_async(base_url, token, "customer", is_study=1)
         task_teachers = fetch_all_pages_async(base_url, token, "teacher")
-        task_lessons = fetch_all_pages_async(base_url, token, "lesson") # Качаем все уроки
-        task_pays = fetch_all_pages_async(base_url, token, "pay")       # Качаем все платежи
+        task_lessons = fetch_all_pages_async(base_url, token, "lesson")
+        task_pays = fetch_all_pages_async(base_url, token, "pay")
         
         return await asyncio.gather(task_leads, task_customers, task_teachers, task_lessons, task_pays)
 
-    # Выполняем асинхронный цикл
     leads, customers, teachers, lessons, pays = asyncio.run(run_sync())
     
     return {
@@ -112,13 +103,13 @@ def get_cached_crm_data(hostname, email, api_key_crm):
         "timestamp": datetime.datetime.now()
     }
 
-# --- ПРОЦЕССОР (Аналог вашего processor.py) ---
+# --- ПРОЦЕССОР (Фильтр данных) ---
 def process_data_for_ai(raw_data, user_prompt):
     customers = raw_data["customers"]
     leads = raw_data["leads"]
     teachers = raw_data["teachers"]
-    all_lessons = raw_data["lessons"] # Теперь тут вся история
-    all_pays = raw_data["pays"]       # Теперь тут вся история
+    all_lessons = raw_data["lessons"] 
+    all_pays = raw_data["pays"]       
     
     now = raw_data["timestamp"]
     current_month = now.strftime("%m")
@@ -126,17 +117,15 @@ def process_data_for_ai(raw_data, user_prompt):
 
     # 1. ФИЛЬТРУЕМ ИСТОРИЮ (Оставляем только текущий месяц для базовой сводки)
     new_customers = [c for c in customers if f"{current_year}-{current_month}" in str(c.get("date_add", "")) or f".{current_month}.{current_year}" in str(c.get("date_add", ""))]
-    
     current_month_pays = [p for p in all_pays if f"{current_year}-{current_month}" in str(p.get("document_date", "")) or f".{current_month}.{current_year}" in str(p.get("document_date", ""))]
-    
     current_month_lessons = [l for l in all_lessons if f"{current_year}-{current_month}" in str(l.get("date", ""))]
 
     # 2. СЧИТАЕМ ЦИФРЫ
     total_debt = sum(abs(float(c.get("balance") or 0)) for c in customers if float(c.get("balance") or 0) < 0)
-    total_income = sum(float(p.get("income") or 0) for p in current_month_pays) # Выручка только за этот месяц
+    total_income = sum(float(p.get("income") or 0) for p in current_month_pays) 
     
     attendances, absences = 0, 0
-    for lesson in current_month_lessons: # Уроки только за этот месяц
+    for lesson in current_month_lessons: 
         if isinstance(lesson.get("details"), list):
             for student in lesson["details"]:
                 status = student.get("is_attend")
@@ -152,9 +141,9 @@ def process_data_for_ai(raw_data, user_prompt):
     💰 ФИНАНСЫ (месяц): Зафиксировано платежей на сумму: {total_income} ₽.
     """
 
-    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН
+    # 4. УМНЫЙ ФИЛЬТР ДЛЯ ИМЕН (Отправляем только по запросу)
     prompt_lower = user_prompt.lower()
-    trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели']
+    trigger_words = ['кто', 'имя', 'имена', 'список', 'кого', 'фамилии', 'ученики', 'преподаватели', 'резиденты']
     
     if any(word in prompt_lower for word in trigger_words):
         lead_names = ", ".join([l.get("name") for l in leads[-15:]])
@@ -169,5 +158,52 @@ def process_data_for_ai(raw_data, user_prompt):
         """
         
     return report
+
+# --- ИНТЕРФЕЙС ЧАТА ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+with st.sidebar:
+    st.markdown("### Управление")
+    if st.button("🔄 Скачать всю историю (Сброс кэша)", use_container_width=True):
+        get_cached_crm_data.clear() # Жестко чистим "базу данных"
+        st.success("Кэш очищен. Данные будут скачаны заново при следующем вопросе.")
+    st.markdown("---")
+    if st.button("Новый чат ➕", use_container_width=True):
+        st.session_state.messages = []
+
+for message in st.session_state.messages:
+    if message.get("role") != "system_context":
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+if prompt := st.chat_input("Спросите о бизнесе..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    try:
+        # 1. Берем данные из кэша (или скачиваем историю, если кэш пуст)
+        with st.spinner("Работаю с базой данных (скачиваю историю при необходимости)..."):
+            raw_data = get_cached_crm_data(
+                st.secrets["ALFACRM_HOSTNAME"], 
+                st.secrets["ALFACRM_EMAIL"], 
+                st.secrets["ALFACRM_API_KEY"]
+            )
+        
+        # 2. Процессор собирает умный текст для ИИ
+        business_snapshot = process_data_for_ai(raw_data, prompt)
+        
+        # 3. Отправляем в нейросеть
+        system_instruction = "Ты - операционный директор частной школы Arzamas. Отвечай кратко на основе данных."
+        combined_prompt = f"{system_instruction}\n\n### ДАННЫЕ ###\n{business_snapshot}\n\nВОПРОС:\n{prompt}"
+        
+        chat_session = model.start_chat(history=[])
+        response = chat_session.send_message(combined_prompt)
+        
+        with st.chat_message("assistant"):
+            st.markdown(response.text)
+        st.session_state.messages.append({"role": "assistant", "content": response.text})
+        
     except Exception as e:
         st.error(f"Системная ошибка: {e}")
